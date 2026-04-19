@@ -120,3 +120,6 @@ llm = ChatOllama(
 
 Want to learn how to build AI agents and AI apps for real data science workflows? Join my next‑gen AI workshop:
 https://learn.business-science.io/ai-register
+
+
+<!-- Test edit by CStolz18 -->

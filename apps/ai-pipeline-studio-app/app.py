@@ -13,6 +13,7 @@ import os
 import json
 import inspect
 import shutil
+import importlib.util
 from openai import OpenAI
 import pandas as pd
 import sqlalchemy as sql
@@ -47,6 +48,17 @@ from ai_data_science_team.multiagents.supervisor_ds_team import make_supervisor_
 from ai_data_science_team.utils.pipeline import build_pipeline_snapshot
 
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENV_FILE_PATH = os.path.join(APP_ROOT, ".env")
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
+if callable(load_dotenv):
+    # Load local .env so Streamlit launched from any shell picks up API credentials.
+    load_dotenv(dotenv_path=ENV_FILE_PATH, override=False)
+
 TITLE = "AI Pipeline Studio"
 LOGO_PATH = os.path.join(APP_ROOT, "img", "ai_pipeline_studio_logo.png")
 page_icon = LOGO_PATH if os.path.exists(LOGO_PATH) else ":bar_chart:"
@@ -125,6 +137,30 @@ PIPELINE_STUDIO_ARTIFACT_GROUPS = {
 PIPELINE_STUDIO_ARTIFACT_KEYS = sorted(
     {key for group in PIPELINE_STUDIO_ARTIFACT_GROUPS.values() for key in group}
 )
+
+
+class _MissingH2OMLAgent:
+    """Fallback used when optional `h2o` dependency is unavailable."""
+
+    def __init__(self, reason: str | None = None):
+        self.response: dict = {}
+        self._reason = (
+            reason
+            or "H2O AutoML is unavailable because `h2o` is not installed. Install it with `pip install h2o`."
+        )
+
+    def invoke_messages(self, **_kwargs):
+        self.response = {
+            "leaderboard": None,
+            "h2o_train_error": self._reason,
+            "h2o_train_error_log_path": None,
+        }
+
+
+if "OPENAI_API_KEY" not in st.session_state:
+    env_openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if env_openai_key:
+        st.session_state["OPENAI_API_KEY"] = env_openai_key
 
 
 def _pipeline_studio_history_init() -> None:
@@ -4806,6 +4842,10 @@ with st.sidebar:
     st.session_state["sql_url"] = sql_url_input or DEFAULT_SQL_URL
 
     st.markdown("**MLflow options**")
+    if importlib.util.find_spec("h2o") is None:
+        st.info(
+            "Optional dependency `h2o` is not installed. H2O AutoML actions are disabled until you run `pip install h2o`."
+        )
     # Use separate widget keys so we can normalize/sync into the internal config keys
     # without violating Streamlit's "no session_state mutation after widget instantiation" rule.
     enable_mlflow_logging = st.checkbox(
@@ -4964,14 +5004,17 @@ def build_team(
     conn = sql.create_engine(resolved_sql_url, **engine_kwargs).connect()
     sql_database_agent = SQLDatabaseAgent(llm, connection=conn, log=False)
     feature_engineering_agent = FeatureEngineeringAgent(llm, log=False)
-    h2o_ml_agent = H2OMLAgent(
-        llm,
-        log=False,
-        enable_mlflow=enable_mlflow_logging,
-        mlflow_tracking_uri=mlflow_tracking_uri,
-        mlflow_artifact_root=mlflow_artifact_root,
-        mlflow_experiment_name=mlflow_experiment_name,
-    )
+    try:
+        h2o_ml_agent = H2OMLAgent(
+            llm,
+            log=False,
+            enable_mlflow=enable_mlflow_logging,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            mlflow_artifact_root=mlflow_artifact_root,
+            mlflow_experiment_name=mlflow_experiment_name,
+        )
+    except ImportError as e:
+        h2o_ml_agent = _MissingH2OMLAgent(str(e))
     model_evaluation_agent = ModelEvaluationAgent()
     mlflow_tools_agent = MLflowToolsAgent(
         llm, log_tool_calls=True, mlflow_tracking_uri=mlflow_tracking_uri
